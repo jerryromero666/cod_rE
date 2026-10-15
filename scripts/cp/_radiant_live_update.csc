@@ -164,7 +164,7 @@ function bo7_wj_watch()
 
         ticks = 0;
         tries++;
-        m = Int( ( want - 1 ) / 2 );
+        m = bo7_wj_mode( want );
         SetDvar( "bo7_mywallmode", "" + m );
         SetDvar( "bo7_mywallspace", "" + ( want - 1 - m * 2 ) );
     }
@@ -202,9 +202,22 @@ function bo7_wj_wanted()
     return 1 + m * 2 + s;
 }
 
+// Mode (0-3) out of a bo7_wjstate value (1-8), by comparison rather than
+// division, so no float-to-int rounding can change it.
+function bo7_wj_mode( v )
+{
+    if ( v >= 7 )
+        return 3;
+    if ( v >= 5 )
+        return 2;
+    if ( v >= 3 )
+        return 1;
+    return 0;
+}
+
 function bo7_wj_desc( v )
 {
-    m = Int( ( v - 1 ) / 2 );
+    m = bo7_wj_mode( v );
     t = "full (side + front)";
     if ( m == 0 )
         t = "off";
