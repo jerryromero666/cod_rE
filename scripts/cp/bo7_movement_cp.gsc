@@ -772,6 +772,7 @@ function try_ledge( v )
     if ( hl > pu )
         pu = hl;
 
+    lstart = GetTime();
     if ( GetDvarInt( "bo7_ledgeassist", 1 ) )
     {
         self.bo7_ledge_t = GetTime();
@@ -794,6 +795,11 @@ function try_ledge( v )
                 return;
         }
     }
+
+    // Press-jump mode: a wall jump pressed during the grace wins over the
+    // ledge push (auto mode keeps the original behaviour).
+    if ( self bo7_wallspace() && IsDefined( self.bo7_last ) && self.bo7_last >= lstart )
+        return;
 
     self.bo7_ledge_t = GetTime();
     self SetVelocity( ( dx * pu, dy * pu, vz ) );
@@ -836,9 +842,9 @@ function omni_scale()
 //
 // monitor_front_bounce runs the same wall checks in press mode as in auto
 // mode, at the same moment, but bo7_wj_fire keeps the wall jump they find as
-// pending (bo7_pend*) instead of launching it. The first one found for a wall
-// is kept, so the jump is judged from the approach as auto mode judges it,
-// not from the slide left after the player hits the wall. bo7_pend_go then
+// pending (bo7_pend*) instead of launching it. The pending one is frozen once
+// the player is at its wall, so the jump is judged from the approach as auto
+// mode judges it, not from the slide left after the player hits the wall. bo7_pend_go then
 // launches the pending wall jump on a jump press while that wall is within
 // bo7_wjtouch units of the player's centre (default 24: the collision radius
 // is 15, so within about 9 units of touching a wall square to it). A press
@@ -857,8 +863,9 @@ function omni_scale()
 // movement, so the frame that sees a ground jump press usually has the
 // player in the air already. A takeoff is therefore: on the ground or wall
 // running at the previous frame, or a sharp rise in vertical speed since
-// then (in the air it only falls, about 40 a frame), which catches a landing
-// and jump between two frames. The rise test leaves out the mod's own pushes
+// then with the jump button down (in the air it only falls, about 40 a
+// frame), which catches a landing and jump between two frames; a steep slope
+// that deflects the player upwards without a press is not a takeoff. The rise test leaves out the mod's own pushes
 // (a wall jump launch, the ledge assist) for 150 ms, and is skipped while the
 // engine double jump is on (the doublejump_enabled dvar, on with bo7_jetpack
 // 1), as a jump press in the air then boosts upward too and would never
@@ -872,13 +879,16 @@ function bo7_jump_reset()
     self.bo7_jwas   = false;
     self.bo7_jair   = false;
     self.bo7_jvz    = 0;
+    self.bo7_jwr    = false;
+    self.bo7_wrj    = 0;
     self.bo7_pendn  = undefined;
 }
 
 function bo7_jump_poll()
 {
     now   = self JumpButtonPressed();
-    inair = ( !self IsOnGround() && !self IsWallRunning() );
+    wr    = self IsWallRunning();
+    inair = ( !self IsOnGround() && !wr );
     vel   = self GetVelocity();
     vz    = vel[2];
     t     = GetTime();
@@ -891,13 +901,29 @@ function bo7_jump_poll()
         lift = true;
 
     rise = false;
-    if ( self.bo7_jair && !lift && GetDvarInt( "doublejump_enabled", 0 ) == 0 && vz > self.bo7_jvz + 100 )
+    if ( now && self.bo7_jair && !lift && GetDvarInt( "doublejump_enabled", 0 ) == 0 && vz > self.bo7_jvz + 100 )
         rise = true;
     takeoff = ( !self.bo7_jair || rise );
 
+    // The press that ends an engine wall run (the campaign has it on; MP and
+    // ZM with bo7_keepwallrun 1) at the pending wall is the press at that
+    // wall, not a takeoff: the engine turns it into its own wall-run jump
+    // before script sees it, so it is caught during the wall run or on the
+    // frame after, and bo7_pend_go launches the mod's wall jump instead.
+    wrj = false;
+    if ( edge && IsDefined( self.bo7_pendn ) )
+    {
+        if ( wr )
+            wrj = self bo7_atwall( self.bo7_pendn );
+        else if ( inair && self.bo7_jwr )
+            wrj = true;
+    }
+    if ( wrj )
+        takeoff = false;
+
     if ( !inair )
     {
-        if ( !self IsWallRunning() )
+        if ( !wr )
         {
             self.bo7_jumpat = 0;
             self.bo7_pendn  = undefined;
@@ -909,12 +935,17 @@ function bo7_jump_poll()
         self.bo7_pendn  = undefined;
     }
 
-    if ( edge && inair && !takeoff && !self IsMantling() )
+    if ( edge && ( inair || wrj ) && !takeoff && !self IsMantling() )
+    {
         self.bo7_jumpat = t;
+        if ( wrj )
+            self.bo7_wrj = t;
+    }
 
     self.bo7_jwas = now;
     self.bo7_jair = inair;
     self.bo7_jvz  = vz;
+    self.bo7_jwr  = ( wr && IsDefined( self.bo7_pendn ) && self bo7_atwall( self.bo7_pendn ) );
 }
 
 function wj_pressed()
@@ -962,8 +993,9 @@ function bo7_atwall( n )
 // The wall checks found a wall jump: wall normal n, approach speed hs,
 // vertical speed vz, alignment al, tag "pre" (side) or "front". Auto mode
 // launches it at once, exactly as before. Press-jump mode keeps it as the
-// pending wall jump, unless one is already pending for the same wall or for
-// a wall the player is still at, and launches the pending one if the press
+// pending wall jump, the newest found on the way in, frozen once the player
+// is at the pending wall (so the jump is judged from before the impact, and
+// a corner keeps the first wall), and launches the pending one if the press
 // is there (bo7_pend_go). The cooldown blocks only the wall just left.
 function bo7_wj_fire( n, hs, vz, al, tag )
 {
@@ -980,7 +1012,7 @@ function bo7_wj_fire( n, hs, vz, al, tag )
 
     keep = false;
     if ( IsDefined( self.bo7_pendn ) )
-        keep = ( bo7_samen( n, self.bo7_pendn ) || self bo7_atwall( self.bo7_pendn ) );
+        keep = self bo7_atwall( self.bo7_pendn );
     if ( !keep )
     {
         self.bo7_pendn   = n;
@@ -1002,7 +1034,7 @@ function bo7_pend_go()
     n = self.bo7_pendn;
     if ( self bo7_cooling() && self bo7_lastwall( n ) )
         return false;
-    if ( !self bo7_atwall( n ) )
+    if ( self.bo7_jumpat != self.bo7_wrj && !self bo7_atwall( n ) )
         return false;
 
     if ( self.bo7_pendtag == "front" )
