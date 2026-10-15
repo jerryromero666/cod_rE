@@ -216,7 +216,10 @@ function bo7_loadin_text()
     self endon( "disconnect" );
 
     wait 1;
-    self IPrintLnBold( "^3WALL JUMP: ^7F1 ^3side+front  ^7F2 ^3side  ^7F3 ^3front  ^7F4 ^3auto/press jump  ^7F5 ^3off" );
+    f4 = "auto/double-tap jump";
+    if ( GetDvarInt( "bo7_wjdouble", 400 ) <= 0 )
+        f4 = "auto/press jump";
+    self IPrintLnBold( "^3WALL JUMP: ^7F1 ^3side+front  ^7F2 ^3side  ^7F3 ^3front  ^7F4 ^3" + f4 + "  ^7F5 ^3off" );
 }
 
 // Faint single-line tag in the bottom-right corner, kept out of the way (the
@@ -344,6 +347,7 @@ function register_bo7_dvars()
     bo7_default( "bo7_wallmode",        1 );
     bo7_default( "bo7_wallspace",       0 );
     bo7_default( "bo7_wjbuffer",        250 );
+    bo7_default( "bo7_wjdouble",        400 );
     bo7_default( "bo7_sidedist",   36 );
 
     bo7_default( "bo7_lift",       400 );
@@ -830,19 +834,25 @@ function omni_scale()
     return base;
 }
 
-// Records a jump press made in the air. With bo7_wallspace 1 a wall jump
-// needs one within bo7_wjbuffer ms. The press that jumps off the ground does
-// not count: by the server frame that sees it the jump has already happened,
-// so the player is in the air, and counting it let a takeoff next to a wall
-// fire a wall jump with no second press (press-jump mode acting as auto).
-// Only a press while the player was already airborne on the previous frame
-// counts.
+// Records the wall-jump press for press-jump mode (bo7_wallspace 1). It is a
+// double tap: a jump press in the air no more than bo7_wjdouble ms (default
+// 400) after the press before it. The press that jumps off the ground is
+// only ever the first tap, so a jump right next to a wall can no longer pass
+// for a wall jump; the second tap can follow the takeoff straight away, or
+// both taps can be made later in the air. Each wall jump needs its own pair
+// (launch_off clears the recorded press). bo7_wjdouble 0 asks for a single
+// press in the air instead; the takeoff still does not count. The wall jump
+// fires while the recorded press is at most bo7_wjbuffer ms old.
+// A takeoff press is told apart by the player not having been airborne on
+// the previous frame: by the server frame that sees the press, the jump has
+// already happened, so the player is already in the air.
 function monitor_jumppress()
 {
     self endon( "disconnect" );
     self endon( "stop_bo7_wall_bounce" );
 
-    self.bo7_jumpat = 0;
+    self.bo7_jumpat   = 0;
+    self.bo7_jumplast = 0;
     was = false;
     air = false;
     while ( true )
@@ -851,8 +861,18 @@ function monitor_jumppress()
 
         now   = self JumpButtonPressed();
         inair = !self IsOnGround();
-        if ( now && !was && inair && air )
-            self.bo7_jumpat = GetTime();
+        if ( now && !was )
+        {
+            t   = GetTime();
+            dbl = GetDvarInt( "bo7_wjdouble", 400 );
+            if ( inair && air && ( dbl <= 0 || ( self.bo7_jumplast > 0 && t - self.bo7_jumplast <= dbl ) ) )
+            {
+                self.bo7_jumpat   = t;
+                self.bo7_jumplast = 0;
+            }
+            else
+                self.bo7_jumplast = t;
+        }
         was = now;
         air = inair;
     }
@@ -866,7 +886,7 @@ function wj_pressed()
 }
 
 // Wall jump modes: bo7_wallmode 0 off, 1 side + frontal, 2 side, 3 frontal.
-// bo7_wallspace 1 = only on a jump press in the air. Keys F1-F5.
+// bo7_wallspace 1 = only on a double-tap jump in the air. Keys F1-F5.
 function wallmode_name( m )
 {
     if ( m <= 0 )
@@ -880,11 +900,12 @@ function wallmode_name( m )
 
 // Each player's wall-jump choice is their own. F1-F5 set the client dvars
 // bo7_mywallmode (0 off / 1 side+front / 2 side / 3 front) and bo7_mywallspace
-// (F4 toggles it: 0 auto, 1 press jump at the wall); bo7slice.dll relays the
-// pair to the server, which delivers it here as a per-player "menuresponse"
-// (response "bo7w<mode><space>"). Stored on the player as self.bo7_wm /
-// self.bo7_ws, which last until the map ends; while unset the server-wide dvar
-// default applies, so a server config can still set a default for everyone.
+// (F4 toggles it: 0 auto, 1 double-tap jump at the wall); bo7slice.dll
+// relays the pair to the server, which delivers it here as a per-player
+// "menuresponse" (response "bo7w<mode><space>"). Stored on the player as
+// self.bo7_wm / self.bo7_ws, which last until the map ends; while unset the
+// server-wide dvar default applies, so a server config can still set a
+// default for everyone.
 //
 // The send is one message with no reply of its own, so it is confirmed
 // through the bo7_wjstate clientfield (bo7_wj_publish): the client script
@@ -944,7 +965,11 @@ function monitor_wallcfg()
 
         sp = "^2auto";
         if ( s != 0 )
-            sp = "^1press jump at the wall";
+        {
+            sp = "^1double-tap jump at the wall";
+            if ( GetDvarInt( "bo7_wjdouble", 400 ) <= 0 )
+                sp = "^1press jump at the wall";
+        }
         self IPrintLnBold( "^3wall jump: " + wallmode_name( m ) + "   ^7space: " + sp );
     }
 }

@@ -93,7 +93,7 @@ function bo7_deferred_load()
 //
 // F4 is bound to "set bo7_wjtog 1" (the "set" command works in this build;
 // "toggle" and "vstr" are both no-ops here). This watches that flag and flips
-// bo7_mywallspace (0 auto <-> 1 press-jump), clearing the flag. The SetDvar
+// bo7_mywallspace (0 auto <-> 1 double-tap jump), clearing the flag. The SetDvar
 // goes through the bo7slice.dll hook - the same path bo7_lean uses - so the
 // flip is relayed to the server. F1/F2/F3/F5 and the console relay directly
 // through that hook (they use "set" too).
@@ -206,7 +206,7 @@ function bo7_wj_desc( v )
     if ( m != 0 )
     {
         if ( v - 1 - m * 2 != 0 )
-            t = t + ", press jump at the wall";
+            t = t + ", double-tap jump at the wall";
         else
             t = t + ", auto";
     }
