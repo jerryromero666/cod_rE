@@ -178,7 +178,6 @@ function monitor_wall_bounce()
     self thread monitor_ledge();
     self thread monitor_prone();
     self thread monitor_slice();
-    self thread monitor_jumppress();
     self.bo7_spawntime = GetTime();
     self thread bo7_wj_publish();
 
@@ -833,48 +832,85 @@ function omni_scale()
     return base;
 }
 
-// Records the wall-jump press for press-jump mode (bo7_wallspace 1). It is a
-// double tap: a jump press in the air no more than bo7_wjdouble ms (default
-// 400) after the press before it. The press that jumps off the ground is
-// only ever the first tap, so a jump right next to a wall can no longer pass
-// for a wall jump; the second tap can follow the takeoff straight away, or
-// both taps can be made later in the air. Each wall jump needs its own pair
-// (launch_off clears the recorded press). bo7_wjdouble 0 asks for a single
-// press in the air instead; the takeoff still does not count. The wall jump
-// fires while the recorded press is at most bo7_wjbuffer ms old.
-// A takeoff press is told apart by the player not having been airborne on
-// the previous frame: by the server frame that sees the press, the jump has
-// already happened, so the player is already in the air.
-function monitor_jumppress()
+// Records the wall-jump press for press-jump mode (bo7_wallspace 1).
+//
+// The first wall jump after leaving the ground needs a double tap: a jump
+// press in the air no more than bo7_wjdouble ms (default 400) after the
+// press before it. The jump off the ground is only ever the first tap, so
+// jumping right next to a wall can no longer pass for a wall jump; the
+// second tap can follow the takeoff straight away, or both taps can be made
+// later in the air, and each further quick tap re-arms from the latest one.
+// Once a wall jump has fired, the next walls of the same chain (until the
+// player lands) need one press each: there is no ground jump to mistake
+// there. bo7_wjdouble 0 asks for a single press in the air instead; the
+// takeoff still does not count. The wall jump fires while the recorded press
+// is at most bo7_wjbuffer ms old. Landing clears it, and so does each wall
+// jump (launch_off). A press while mantling never arms.
+//
+// Script runs once per server frame, after that frame's movement, so the
+// frame that sees a ground jump press usually has the player in the air
+// already. A takeoff is therefore: on the ground at the previous frame, or a
+// sharp rise in vertical speed since then (in the air it only falls, about
+// 40 a frame), which catches a landing and jump between two frames. The
+// speed test is skipped while the engine double jump is on (the
+// doublejump_enabled dvar, on with bo7_jetpack 1), as a jump
+// press in the air then boosts upward too and would never arm. A jump seen leaving the
+// ground with no press seen (a tap shorter than a frame) still counts as the
+// first tap. Any takeoff clears a press armed before it. An engine wall run counts as ground but keeps an armed press for the
+// wall-run bounce (do_bounce).
+//
+// bo7_jump_poll runs at the top of each monitor_front_bounce frame, before
+// its wall-jump check, so the check always sees this frame's taps (a
+// separate thread could run after it in the same frame and let a press from
+// before a takeoff through).
+function bo7_jump_reset()
 {
-    self endon( "disconnect" );
-    self endon( "stop_bo7_wall_bounce" );
-
     self.bo7_jumpat   = 0;
     self.bo7_jumplast = 0;
-    was = false;
-    air = false;
-    while ( true )
-    {
-        wait 0.05;
+    self.bo7_jwas     = false;
+    self.bo7_jair     = false;
+    self.bo7_jvz      = 0;
+}
 
-        now   = self JumpButtonPressed();
-        inair = !self IsOnGround();
-        if ( now && !was )
+function bo7_jump_poll()
+{
+    now     = self JumpButtonPressed();
+    inair   = !self IsOnGround();
+    vel     = self GetVelocity();
+    vz      = vel[2];
+    t       = GetTime();
+    edge    = ( now && !self.bo7_jwas );
+    takeoff = !self.bo7_jair;
+    if ( GetDvarInt( "doublejump_enabled", 0 ) == 0 && vz > self.bo7_jvz + 100 )
+        takeoff = true;
+
+    if ( !inair )
+    {
+        if ( !self IsWallRunning() )
         {
-            t   = GetTime();
-            dbl = GetDvarInt( "bo7_wjdouble", 400 );
-            if ( inair && air && ( dbl <= 0 || ( self.bo7_jumplast > 0 && t - self.bo7_jumplast <= dbl ) ) )
-            {
-                self.bo7_jumpat   = t;
+            self.bo7_jumpat = 0;
+            if ( !edge )
                 self.bo7_jumplast = 0;
-            }
-            else
-                self.bo7_jumplast = t;
         }
-        was = now;
-        air = inair;
     }
+    else if ( takeoff )
+        self.bo7_jumpat = 0;
+
+    if ( edge )
+    {
+        dbl   = GetDvarInt( "bo7_wjdouble", 400 );
+        chain = ( IsDefined( self.bo7_chain ) && self.bo7_chain > 0 );
+        pair  = ( self.bo7_jumplast > 0 && t - self.bo7_jumplast <= dbl );
+        if ( inair && !takeoff && !self IsMantling() && ( dbl <= 0 || chain || pair ) )
+            self.bo7_jumpat = t;
+        self.bo7_jumplast = t;
+    }
+    else if ( inair && !self.bo7_jair && vz > 150 )
+        self.bo7_jumplast = t;
+
+    self.bo7_jwas = now;
+    self.bo7_jair = inair;
+    self.bo7_jvz  = vz;
 }
 
 function wj_pressed()
@@ -885,7 +921,8 @@ function wj_pressed()
 }
 
 // Wall jump modes: bo7_wallmode 0 off, 1 side + frontal, 2 side, 3 frontal.
-// bo7_wallspace 1 = only on a double-tap jump in the air. Keys F1-F5.
+// bo7_wallspace 1 = only on a double-tap jump in the air (see
+// bo7_jump_poll). Keys F1-F5.
 function wallmode_name( m )
 {
     if ( m <= 0 )
@@ -1044,12 +1081,15 @@ function monitor_front_bounce()
     self endon( "disconnect" );
     self endon( "stop_bo7_wall_bounce" );
 
+    self bo7_jump_reset();
     while ( true )
     {
         wait 0.05;
 
         if ( !IsAlive( self ) )
             continue;
+
+        self bo7_jump_poll();
 
         msp = self omni_scale();
         if ( !IsDefined( self.bo7_speed_applied ) || self.bo7_speed_applied != msp )
@@ -1086,7 +1126,7 @@ function monitor_front_bounce()
         if ( self IsWallRunning() )
             continue;
 
-        if ( self bo7_wallspace() && !self wj_pressed() )
+        if ( self bo7_wallspace() && ( !self wj_pressed() || self IsMantling() ) )
             continue;
 
         v  = self GetVelocity();
@@ -1383,7 +1423,8 @@ function chain_mult( n, decay, floor_v )
 function launch_off( normal, peak, vz_in, align, tag, t0 )
 {
     self.bo7_launch_t = GetTime();
-    self.bo7_jumpat = 0;
+    self.bo7_jumpat   = 0;
+    self.bo7_jumplast = 0;
 
     if ( !IsDefined( self.bo7_chain ) )
         self.bo7_chain = 0;

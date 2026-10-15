@@ -216,7 +216,7 @@ function bo7_wj_desc( v )
     if ( m != 0 )
     {
         if ( v - 1 - m * 2 != 0 )
-            t = t + ", double-tap jump at the wall";
+            t = t + ", press jump mode (not auto)";
         else
             t = t + ", auto";
     }
