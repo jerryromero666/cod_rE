@@ -30,15 +30,17 @@ REGISTER_SYSTEM( "bo7_movement", &bo7_init, undefined )
 // Clientfields shared with the client script (_radiant_live_update.csc):
 // bo7_omniok tells clients the server's sprint code is patched, so they load
 // omnimovement.dll and their prediction matches the server; bo7_lean carries
-// each player's corner-slice cant to that player's client; bo7_wjsync asks a
-// player's client to send its wall-jump choice again (see monitor_wallcfg).
+// each player's corner-slice cant to that player's client; bo7_wjstate tells
+// a player's client which wall-jump setting the server is using for them
+// (see monitor_wallcfg).
 function bo7_init()
 {
     clientfield::register( "world", "bo7_omniok", VERSION_SHIP, 1, "int" );
     clientfield::register( "toplayer", "bo7_lean", VERSION_SHIP, 9, "int" );
-    clientfield::register( "toplayer", "bo7_wjsync", VERSION_SHIP, 2, "int" );
+    clientfield::register( "toplayer", "bo7_wjstate", VERSION_SHIP, 4, "int" );
     level thread bo7_flag_omni();
     callback::on_spawned( &bo7_zm_on_spawned );
+    callback::on_connect( &bo7_wj_on_connect );
     level thread bo7_zm_hook_oob();
 }
 
@@ -358,9 +360,8 @@ function monitor_wall_bounce()
     self thread monitor_ledge();
     self thread monitor_slice();
     self thread monitor_jumppress();
-    self thread monitor_wallcfg();
     self.bo7_spawntime = GetTime();
-    self bo7_wjsync();
+    self thread bo7_wj_publish();
 
     if ( !IsDefined( self.bo7_welcomed ) )
     {
@@ -1086,22 +1087,31 @@ function monitor_speed()
     }
 }
 
-// Records a jump press that starts in the air. With bo7_wallspace 1 a wall
-// jump needs one within bo7_wjbuffer ms.
+// Records a jump press made in the air. With bo7_wallspace 1 a wall jump
+// needs one within bo7_wjbuffer ms. The press that jumps off the ground does
+// not count: by the server frame that sees it the jump has already happened,
+// so the player is in the air, and counting it let a takeoff next to a wall
+// fire a wall jump with no second press (press-jump mode acting as auto).
+// Only a press while the player was already airborne on the previous frame
+// counts.
 function monitor_jumppress()
 {
     self endon( "disconnect" );
     self endon( "stop_bo7_wall_bounce" );
 
+    self.bo7_jumpat = 0;
     was = false;
+    air = false;
     while ( true )
     {
         wait 0.05;
 
-        now = self JumpButtonPressed();
-        if ( now && !was && !self IsOnGround() )
+        now   = self JumpButtonPressed();
+        inair = !self IsOnGround();
+        if ( now && !was && inair && air )
             self.bo7_jumpat = GetTime();
         was = now;
+        air = inair;
     }
 }
 
@@ -1132,13 +1142,26 @@ function wallmode_name( m )
 // (response "bo7w<mode><space>"). Stored on the player as self.bo7_wm /
 // self.bo7_ws, which last until the map ends; while unset the server-wide dvar
 // default applies, so a server config can still set a default for everyone.
-// The DLL's own send after a map change arrives before the player has
-// spawned, so each spawn asks the client for the choice again (bo7_wjsync).
-// That repeat is not announced unless it changes something.
+//
+// The send is one message with no reply of its own, so it is confirmed
+// through the bo7_wjstate clientfield (bo7_wj_publish): the client script
+// keeps asking the DLL to send again until the server reports the same
+// setting the player picked. That covers a send made before this listener
+// was running (connecting, a map change) as well as one that never arrived.
+// The listener starts when the player connects, not at spawn, so a choice
+// made in the lobby, while dead or in a killcam is taken at once, and it is
+// restarted at every spawn in case a map restart dropped it. A repeat that
+// changes nothing is not announced at spawn or more than once in 2 s.
+function bo7_wj_on_connect()
+{
+    self thread monitor_wallcfg();
+}
+
 function monitor_wallcfg()
 {
     self endon( "disconnect" );
-    self endon( "stop_bo7_wall_bounce" );
+    self notify( "bo7_wallcfg" );
+    self endon( "bo7_wallcfg" );
 
     while ( true )
     {
@@ -1164,9 +1187,17 @@ function monitor_wallcfg()
 
         self.bo7_wm = m;
         self.bo7_ws = ( s != 0 );
+        if ( IsDefined( self.bo7_spawntime ) )
+            self bo7_wj_state_send();
 
-        if ( same && IsDefined( self.bo7_spawntime ) && GetTime() - self.bo7_spawntime < 3000 )
-            continue;
+        if ( same )
+        {
+            if ( IsDefined( self.bo7_spawntime ) && GetTime() - self.bo7_spawntime < 3000 )
+                continue;
+            if ( IsDefined( self.bo7_wjmsg ) && GetTime() - self.bo7_wjmsg < 2000 )
+                continue;
+        }
+        self.bo7_wjmsg = GetTime();
 
         sp = "^2auto";
         if ( s != 0 )
@@ -1175,16 +1206,41 @@ function monitor_wallcfg()
     }
 }
 
-// Asks this player's client to send its wall-jump choice again: a new value
-// of the bo7_wjsync clientfield (1-3, so every spawn is a change) makes the
-// client script write bo7_mywallmode back, and bo7slice.dll sends the pair.
-function bo7_wjsync()
+// Keeps the bo7_wjstate clientfield equal to the wall-jump setting this
+// player actually has: 1 + mode * 2 + (1 if press jump is required), so 1-8;
+// 0 means nothing published yet. It is checked twice a second, so a change
+// to the server default (bo7_wallmode / bo7_wallspace) is published too. One
+// loop per player, started at the first spawn (nothing is published before
+// it): each spawn replaces the last, and it keeps running while the player
+// is dead.
+function bo7_wj_publish()
 {
-    n = 1;
-    if ( IsDefined( self.bo7_wjn ) && self.bo7_wjn < 3 )
-        n = self.bo7_wjn + 1;
-    self.bo7_wjn = n;
-    self clientfield::set_to_player( "bo7_wjsync", n );
+    self endon( "disconnect" );
+    self notify( "bo7_wj_publish" );
+    self endon( "bo7_wj_publish" );
+
+    self thread monitor_wallcfg();
+
+    while ( true )
+    {
+        self bo7_wj_state_send();
+        wait 0.5;
+    }
+}
+
+function bo7_wj_state_send()
+{
+    m = self bo7_wallmode();
+    if ( m < 0 || m > 3 )
+        m = 0;
+    v = 1 + m * 2;
+    if ( self bo7_wallspace() )
+        v = v + 1;
+
+    if ( IsDefined( self.bo7_wjpub ) && self.bo7_wjpub == v )
+        return;
+    self.bo7_wjpub = v;
+    self clientfield::set_to_player( "bo7_wjstate", v );
 }
 
 // This player's wall-jump mode / jump-press requirement: their own choice if
