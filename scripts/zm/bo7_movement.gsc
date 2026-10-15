@@ -527,8 +527,9 @@ function register_bo7_dvars()
     bo7_default( "bo7_sidepre",    1 );
     bo7_default( "bo7_wallmode",        1 );
     bo7_default( "bo7_wallspace",       0 );
-    bo7_default( "bo7_wjbuffer",        100 );
+    bo7_default( "bo7_wjbuffer",        50 );
     bo7_default( "bo7_wjtouch",         24 );
+    bo7_default( "bo7_wjimpact",        500 );
     bo7_default( "bo7_sidedist",   36 );
 
     bo7_default( "bo7_lift",       400 );
@@ -1092,16 +1093,28 @@ function monitor_speed()
 // press made in the air, at the wall. In this mode monitor_front_bounce only
 // launches when the wall is within bo7_wjtouch units of the player's centre
 // (default 24: the player is 15 wide, so within about 9 units of touching
-// it), and only on a press at most bo7_wjbuffer ms old (default 100), so the
-// press has to be made at the wall, not on the way to it. The jump off the
-// ground never counts, so jumping while right next to a wall does not fire
-// a wall jump either: the player presses again once at the wall. Each wall
-// of a chain needs its own press. Landing, any takeoff and each wall jump
-// (launch_off) clear the press, and a press while mantling never counts.
+// it), and only on a press at most bo7_wjbuffer ms old (default 50, one
+// frame of grace), so the press has to be made at the wall, not on the way
+// to it. The jump off the ground never counts, so jumping while right next
+// to a wall does not fire a wall jump either: the player presses again once
+// at the wall. Each wall of a chain needs its own press. Landing, any
+// takeoff and each wall jump (launch_off) clear the press, and a press while
+// mantling never counts.
+//
+// By the time a player presses at the wall the engine has already taken out
+// the velocity into it, which would leave only a slide along the wall to
+// judge from (wrong direction for a front wall hit at an angle, and a weak
+// launch). So the poll keeps the horizontal velocity from the frame before
+// an impact (a sharp drop in horizontal velocity while airborne, outside the
+// mod's own pushes) in bo7_impv, and press mode judges the wall jump from it
+// for bo7_wjimpact ms (default 500), as auto mode judges before contact.
+// The cooldown after a wall jump (bo7_cooldown) only blocks the same wall in
+// press mode (bo7_lastwall), so a press at the next wall of a chain is not
+// lost to it.
 //
 // Script runs once per server frame, after that frame's movement, so the
 // frame that sees a ground jump press usually has the player in the air
-// already. A takeoff is therefore: on the ground (or wall running) at the
+// already. A takeoff is therefore: on the ground or wall running at the
 // previous frame, or a sharp rise in vertical speed since then (in the air
 // it only falls, about 40 a frame), which catches a landing and jump between
 // two frames. The rise test leaves out the mod's own pushes (a wall jump
@@ -1117,12 +1130,14 @@ function bo7_jump_reset()
     self.bo7_jwas   = false;
     self.bo7_jair   = false;
     self.bo7_jvz    = 0;
+    self.bo7_jvh    = ( 0, 0, 0 );
+    self.bo7_impv   = undefined;
 }
 
 function bo7_jump_poll()
 {
     now   = self JumpButtonPressed();
-    inair = !self IsOnGround();
+    inair = ( !self IsOnGround() && !self IsWallRunning() );
     vel   = self GetVelocity();
     vz    = vel[2];
     t     = GetTime();
@@ -1150,16 +1165,29 @@ function bo7_jump_poll()
     if ( edge && inair && !takeoff && !self IsMantling() )
         self.bo7_jumpat = t;
 
+    vh = ( vel[0], vel[1], 0 );
+    if ( !inair || takeoff )
+        self.bo7_impv = undefined;
+    else if ( !lift && Length( vh ) < Length( self.bo7_jvh ) && Length( self.bo7_jvh - vh ) > 60 )
+    {
+        if ( !IsDefined( self.bo7_impv ) || t - self.bo7_impt > GetDvarInt( "bo7_wjimpact", 500 ) )
+        {
+            self.bo7_impv = self.bo7_jvh;
+            self.bo7_impt = t;
+        }
+    }
+
     self.bo7_jwas = now;
     self.bo7_jair = inair;
     self.bo7_jvz  = vz;
+    self.bo7_jvh  = vh;
 }
 
 function wj_pressed()
 {
     if ( !IsDefined( self.bo7_jumpat ) || self.bo7_jumpat <= 0 )
         return false;
-    return ( GetTime() - self.bo7_jumpat ) <= GetDvarInt( "bo7_wjbuffer", 100 );
+    return ( GetTime() - self.bo7_jumpat ) <= GetDvarInt( "bo7_wjbuffer", 50 );
 }
 
 // Wall jump modes: bo7_wallmode 0 off, 1 side + frontal, 2 side, 3 frontal.
@@ -1300,12 +1328,22 @@ function bo7_wallspace()
     return ( GetDvarInt( "bo7_wallspace", 0 ) != 0 );
 }
 
-// True while the last launch is within bo7_cooldown ms.
+// True while the last launch is within bo7_cooldown ms (launch_off sets
+// bo7_last again when its hold ends, so this runs from the end of the hold).
 function bo7_cooling()
 {
     if ( !IsDefined( self.bo7_last ) )
         return false;
     return ( GetTime() - self.bo7_last ) < GetDvarFloat( "bo7_cooldown", 300 );
+}
+
+// True if wall normal n is the wall of the last wall jump (bo7_samewall).
+// Press-jump mode only lets the cooldown block that wall.
+function bo7_lastwall( n )
+{
+    if ( !IsDefined( self.bo7_lastn ) )
+        return false;
+    return ( ( n[0] * self.bo7_lastn[0] ) + ( n[1] * self.bo7_lastn[1] ) ) > GetDvarFloat( "bo7_samewall", 0.85 );
 }
 
 // Wall jump polling, every server frame while airborne:
@@ -1358,21 +1396,29 @@ function monitor_front_bounce()
         wfront = ( wm == 1 || wm == 3 );
         if ( GetDvarInt( "bo7_front", 1 ) == 0 && GetDvarInt( "bo7_sidepre", 1 ) == 0 )
             continue;
-        if ( self bo7_cooling() )
+        // Press-jump mode (pm): only on a fresh press, only with the wall
+        // within bo7_wjtouch of the player's centre (below), judged from the
+        // velocity before the wall impact, and the cooldown only blocks the
+        // wall just jumped off (see bo7_jump_poll).
+        pm   = self bo7_wallspace();
+        cool = self bo7_cooling();
+        if ( cool && !pm )
             continue;
 
         if ( self IsWallRunning() )
             continue;
 
-        // Press-jump mode: only on a fresh press, and (below) only with the
-        // wall within bo7_wjtouch of the player's centre.
-        pm = self bo7_wallspace();
         if ( pm && ( !self wj_pressed() || self IsMantling() ) )
             continue;
         touch = GetDvarFloat( "bo7_wjtouch", 24 );
 
         v  = self GetVelocity();
         hs = Length( ( v[0], v[1], 0 ) );
+        if ( pm && IsDefined( self.bo7_impv ) && GetTime() - self.bo7_impt <= GetDvarInt( "bo7_wjimpact", 500 ) )
+        {
+            v  = ( self.bo7_impv[0], self.bo7_impv[1], v[2] );
+            hs = Length( self.bo7_impv );
+        }
         if ( hs < GetDvarFloat( "bo7_frontspeed", 0 ) )
             continue;
 
@@ -1462,7 +1508,7 @@ function monitor_front_bounce()
                 }
             }
 
-            if ( Length( sbn ) > 0.1 && ( !pm || sbd <= touch ) )
+            if ( Length( sbn ) > 0.1 && ( !pm || sbd <= touch ) && !( cool && self bo7_lastwall( sbn ) ) )
             {
                 self thread launch_off( sbn, hs, v[2], sba, "pre", GetTime() );
                 continue;
@@ -1516,6 +1562,9 @@ function monitor_front_bounce()
         if ( a < 0 )
             a = 0 - a;
         if ( a < GetDvarFloat( "bo7_frontalign", 0.75 ) )
+            continue;
+
+        if ( cool && self bo7_lastwall( ( nx, ny, 0 ) ) )
             continue;
 
         if ( IsDefined( self.bo7_front_wall ) )
@@ -1676,6 +1725,8 @@ function launch_off( normal, peak, vz_in, align, tag, t0 )
 {
     self.bo7_launch_t = GetTime();
     self.bo7_jumpat = 0;
+    self.bo7_impv   = undefined;
+    self.bo7_lastn  = normal;
 
     if ( !IsDefined( self.bo7_chain ) )
         self.bo7_chain = 0;
