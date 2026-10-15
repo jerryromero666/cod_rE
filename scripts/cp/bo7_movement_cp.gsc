@@ -214,10 +214,7 @@ function bo7_loadin_text()
     self endon( "disconnect" );
 
     wait 1;
-    f4 = "auto/double-tap jump";
-    if ( GetDvarInt( "bo7_wjdouble", 400 ) <= 0 )
-        f4 = "auto/press jump";
-    self IPrintLnBold( "^3WALL JUMP: ^7F1 ^3side+front  ^7F2 ^3side  ^7F3 ^3front  ^7F4 ^3" + f4 + "  ^7F5 ^3off" );
+    self IPrintLnBold( "^3WALL JUMP: ^7F1 ^3side+front  ^7F2 ^3side  ^7F3 ^3front  ^7F4 ^3auto/press jump  ^7F5 ^3off" );
 }
 
 // Faint single-line tag in the bottom-right corner, kept out of the way (the
@@ -344,8 +341,8 @@ function register_bo7_dvars()
     bo7_default( "bo7_sidepre",    1 );
     bo7_default( "bo7_wallmode",        1 );
     bo7_default( "bo7_wallspace",       0 );
-    bo7_default( "bo7_wjbuffer",        250 );
-    bo7_default( "bo7_wjdouble",        400 );
+    bo7_default( "bo7_wjbuffer",        100 );
+    bo7_default( "bo7_wjtouch",         24 );
     bo7_default( "bo7_sidedist",   36 );
 
     bo7_default( "bo7_lift",       400 );
@@ -834,22 +831,16 @@ function omni_scale()
     return base;
 }
 
-// Records the wall-jump press for press-jump mode (bo7_wallspace 1).
-//
-// The first wall jump after leaving the ground needs a double tap: a jump
-// press in the air no more than bo7_wjdouble ms (default 400) after the
-// press before it. The jump off the ground is only ever the first tap, so
-// jumping right next to a wall can no longer pass for a wall jump; the
-// second tap can follow the takeoff straight away, or both taps can be made
-// later in the air, and each further quick tap re-arms from the latest one.
-// Once a wall jump has fired, the next walls of the same chain need one
-// press each (bo7_wjchain, set by launch_off): there is no ground jump to
-// mistake there. The chain ends when the player lands, including a landing
-// and jump between two frames, and at each spawn; an engine wall run does
-// not end it. bo7_wjdouble 0 asks for a single press in the air instead; the
-// takeoff still does not count. The wall jump fires while the recorded press
-// is at most bo7_wjbuffer ms old. Landing, any takeoff and each wall jump
-// (launch_off) clear it. A press while mantling never arms.
+// Records the wall-jump press for press-jump mode (bo7_wallspace 1): a jump
+// press made in the air, at the wall. In this mode monitor_front_bounce only
+// launches when the wall is within bo7_wjtouch units of the player's centre
+// (default 24: the player is 15 wide, so within about 9 units of touching
+// it), and only on a press at most bo7_wjbuffer ms old (default 100), so the
+// press has to be made at the wall, not on the way to it. The jump off the
+// ground never counts, so jumping while right next to a wall does not fire
+// a wall jump either: the player presses again once at the wall. Each wall
+// of a chain needs its own press. Landing, any takeoff and each wall jump
+// (launch_off) clear the press, and a press while mantling never counts.
 //
 // Script runs once per server frame, after that frame's movement, so the
 // frame that sees a ground jump press usually has the player in the air
@@ -859,24 +850,16 @@ function omni_scale()
 // two frames. The rise test leaves out the mod's own pushes (a wall jump
 // launch, the ledge assist) for 150 ms, and is skipped while the engine
 // double jump is on (the doublejump_enabled dvar, on with bo7_jetpack 1), as
-// a jump press in the air then boosts upward too and would never arm. A
-// takeoff with no press seen (a tap shorter than a frame) still counts as
-// the first tap if vertical speed is above 150 and higher than the frame
-// before, which running off a ramp never is; a jump pad or knockback looks
-// the same and also counts as a first tap.
+// a jump press in the air then boosts upward too and would never count.
 //
 // bo7_jump_poll runs at the top of each monitor_front_bounce frame, before
-// its wall-jump check, so the check always sees this frame's taps (a
-// separate thread could run after it in the same frame and let a press from
-// before a takeoff through).
+// its wall-jump check, so the check always sees this frame's press.
 function bo7_jump_reset()
 {
-    self.bo7_jumpat   = 0;
-    self.bo7_jumplast = 0;
-    self.bo7_wjchain  = false;
-    self.bo7_jwas     = false;
-    self.bo7_jair     = false;
-    self.bo7_jvz      = 0;
+    self.bo7_jumpat = 0;
+    self.bo7_jwas   = false;
+    self.bo7_jair   = false;
+    self.bo7_jvz    = 0;
 }
 
 function bo7_jump_poll()
@@ -902,30 +885,13 @@ function bo7_jump_poll()
     if ( !inair )
     {
         if ( !self IsWallRunning() )
-        {
-            self.bo7_jumpat  = 0;
-            self.bo7_wjchain = false;
-            if ( !edge )
-                self.bo7_jumplast = 0;
-        }
+            self.bo7_jumpat = 0;
     }
     else if ( takeoff )
-    {
         self.bo7_jumpat = 0;
-        if ( rise )
-            self.bo7_wjchain = false;
-    }
 
-    if ( edge )
-    {
-        dbl  = GetDvarInt( "bo7_wjdouble", 400 );
-        pair = ( self.bo7_jumplast > 0 && t - self.bo7_jumplast <= dbl );
-        if ( inair && !takeoff && !self IsMantling() && ( dbl <= 0 || self.bo7_wjchain || pair ) )
-            self.bo7_jumpat = t;
-        self.bo7_jumplast = t;
-    }
-    else if ( inair && takeoff && vz > 150 && vz > self.bo7_jvz )
-        self.bo7_jumplast = t;
+    if ( edge && inair && !takeoff && !self IsMantling() )
+        self.bo7_jumpat = t;
 
     self.bo7_jwas = now;
     self.bo7_jair = inair;
@@ -936,13 +902,12 @@ function wj_pressed()
 {
     if ( !IsDefined( self.bo7_jumpat ) || self.bo7_jumpat <= 0 )
         return false;
-    return ( GetTime() - self.bo7_jumpat ) <= GetDvarInt( "bo7_wjbuffer", 250 );
+    return ( GetTime() - self.bo7_jumpat ) <= GetDvarInt( "bo7_wjbuffer", 100 );
 }
 
 // Wall jump modes: bo7_wallmode 0 off, 1 side + frontal, 2 side, 3 frontal.
-// bo7_wallspace 1 = press jump mode: a double tap for the first wall after
-// leaving the ground, then one press per wall of the chain (see
-// bo7_jump_poll). Keys F1-F5.
+// bo7_wallspace 1 = press jump mode: a jump press in the air, at the wall
+// (see bo7_jump_poll). Keys F1-F5.
 function wallmode_name( m )
 {
     if ( m <= 0 )
@@ -956,7 +921,7 @@ function wallmode_name( m )
 
 // Each player's wall-jump choice is their own. F1-F5 set the client dvars
 // bo7_mywallmode (0 off / 1 side+front / 2 side / 3 front) and bo7_mywallspace
-// (F4 toggles it: 0 auto, 1 double-tap jump at the wall); bo7slice.dll
+// (F4 toggles it: 0 auto, 1 press jump at the wall); bo7slice.dll
 // relays the pair to the server, which delivers it here as a per-player
 // "menuresponse" (response "bo7w<mode><space>"). Stored on the player as
 // self.bo7_wm / self.bo7_ws, which last until the map ends; while unset the
@@ -1020,11 +985,7 @@ function monitor_wallcfg()
 
         sp = "^2auto";
         if ( s != 0 )
-        {
-            sp = "^1double-tap jump at the wall";
-            if ( GetDvarInt( "bo7_wjdouble", 400 ) <= 0 )
-                sp = "^1press jump at the wall";
-        }
+            sp = "^1press jump at the wall";
         self IPrintLnBold( "^3wall jump: " + wallmode_name( m ) + "   ^7space: " + sp );
     }
 }
@@ -1146,8 +1107,12 @@ function monitor_front_bounce()
         if ( self IsWallRunning() )
             continue;
 
-        if ( self bo7_wallspace() && ( !self wj_pressed() || self IsMantling() ) )
+        // Press-jump mode: only on a fresh press, and (below) only with the
+        // wall within bo7_wjtouch of the player's centre.
+        pm = self bo7_wallspace();
+        if ( pm && ( !self wj_pressed() || self IsMantling() ) )
             continue;
+        touch = GetDvarFloat( "bo7_wjtouch", 24 );
 
         v  = self GetVelocity();
         hs = Length( ( v[0], v[1], 0 ) );
@@ -1186,6 +1151,7 @@ function monitor_front_bounce()
             sbf   = 1.0;
             sbn   = ( 0, 0, 0 );
             sba   = 0;
+            sbd   = 0;
 
             dgx = vhat[0] + rtx;
             dgy = vhat[1] + rty;
@@ -1232,13 +1198,14 @@ function monitor_front_bounce()
                 if ( ts[ "fraction" ] < sbf )
                 {
                     self.bo7_hitd = ( ts[ "fraction" ] * slen ) + soff;
+                    sbd = self.bo7_hitd;
                     sbf = ts[ "fraction" ];
                     sbn = ( snx, sny, 0 );
                     sba = sa;
                 }
             }
 
-            if ( Length( sbn ) > 0.1 )
+            if ( Length( sbn ) > 0.1 && ( !pm || sbd <= touch ) )
             {
                 self thread launch_off( sbn, hs, v[2], sba, "pre", GetTime() );
                 continue;
@@ -1266,6 +1233,14 @@ function monitor_front_bounce()
             continue;
 
         self.bo7_hitd = t[ "fraction" ] * reach;
+
+        // Distance from the player's centre to the wall: the box probe stops
+        // with its face, bo7_probew from the centre, on the wall.
+        fd = self.bo7_hitd;
+        if ( GetDvarInt( "bo7_physprobe", 1 ) )
+            fd = fd + GetDvarFloat( "bo7_probew", 12 );
+        if ( pm && fd > touch )
+            continue;
 
         n  = t[ "normal" ];
         nl = Length( ( n[0], n[1], 0 ) );
@@ -1443,8 +1418,7 @@ function chain_mult( n, decay, floor_v )
 function launch_off( normal, peak, vz_in, align, tag, t0 )
 {
     self.bo7_launch_t = GetTime();
-    self.bo7_jumpat   = 0;
-    self.bo7_jumplast = 0;
+    self.bo7_jumpat = 0;
 
     if ( !IsDefined( self.bo7_chain ) )
         self.bo7_chain = 0;
@@ -1460,7 +1434,6 @@ function launch_off( normal, peak, vz_in, align, tag, t0 )
     }
 
     self.bo7_chain = self.bo7_chain + 1;
-    self.bo7_wjchain = true;
     cn = self.bo7_chain;
     cv = chain_mult( cn, GetDvarFloat( "bo7_chaindecay",  0.10 ), GetDvarFloat( "bo7_chainmin",  0.60 ) );
     ch = chain_mult( cn, GetDvarFloat( "bo7_chainhdecay", 0.04 ), GetDvarFloat( "bo7_chainhmin", 0.80 ) );
