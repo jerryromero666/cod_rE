@@ -1,0 +1,47 @@
+>mode,core
+>type,common
+
+#include "core_mod.class"
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
+// you should keep these defaults cfg in core_mod and always include them in your mods this is to prevent the game from hitching when it needs to execute them
+rawfile,mod.cfg
+rawfile,cp_mod.cfg
+rawfile,mp_mod.cfg
+rawfile,zm_mod.cfg
+// note that if you make changes in the cfg, you need to build this fastfile for the game to get the latest
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Movement scripts. core_mod loads before mp_common / mp_patch, so these
+// replace the stock copies.
+scriptparsetree,scripts/mp/bo7_movement.gsc
+scriptparsetree,scripts/mp/gametypes/_globallogic_spawn.gsc
+
+// Client loaders for omnimovement.dll and bo7slice.dll, and the client side
+// of the clientfields. The .lua files are compiled at link time, which needs
+// L3akMod in the mod tools bin folder.
+rawfile,ui/bo7_omni_loader.lua
+rawfile,ui/bo7_slice_loader.lua
+scriptparsetree,scripts/mp/_radiant_live_update.csc
+
+// Zombies: its own copy of the movement script (ZM settings, out-of-bounds
+// reset, timed banner). The game loads scripts/mp or scripts/zm by mode, so
+// each mode only ever runs its own set. _zm_ffotd.gsc is the stock ZM stub plus
+// a #using of scripts/zm/bo7_movement.gsc; the .csc overrides the stock ZM stub.
+scriptparsetree,scripts/zm/bo7_movement.gsc
+scriptparsetree,scripts/zm/_zm_ffotd.gsc
+scriptparsetree,scripts/zm/_radiant_live_update.csc
+
+// Campaign: scripts/cp/bo7_movement_cp.gsc (own namespace and system name;
+// exo abilities on, no out-of-bounds code; off in Dead Ops Arcade). There
+// are no stock CP sources in the mod tools, so it is hooked through two empty
+// stock stubs: scripts/cp/_rat.gsc and scripts/shared/animation_debug_shared
+// .gsc (the shared one is loaded in every mode; the CP script returns at once
+// outside the campaign). The .csc overrides the stock CP stub as in MP / ZM.
+scriptparsetree,scripts/cp/bo7_movement_cp.gsc
+scriptparsetree,scripts/cp/_rat.gsc
+scriptparsetree,scripts/shared/animation_debug_shared.gsc
+scriptparsetree,scripts/cp/_radiant_live_update.csc
+
+// Wall jump sound (sound\zoneconfig\core_mod.szc).
+sound,core_mod

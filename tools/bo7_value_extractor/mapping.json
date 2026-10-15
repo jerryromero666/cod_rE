@@ -1,0 +1,119 @@
+{
+  "_about": "Rules that turn exported BO7 values into bo7_* settings. Each 'patterns' entry is a case-insensitive regex tested against the full exported key path (file name not included). Earlier patterns rank higher. Edit freely once you know BO7's real key names.",
+  "_transforms": {
+    "direct": "copy the value as is (BO7 and BO3 both use inches and inches/second)",
+    "ms": "milliseconds; values below 20 are treated as seconds and multiplied by 1000",
+    "ratio": "value divided by the reference named in 'ref' (see 'references')"
+  },
+  "references": {
+    "bo3_sprint_speed": {
+      "value": 285,
+      "note": "BO3 sprint speed in units/sec (190 run speed x 1.5 sprint scale). Measure it in your mod with cg_drawSpeed or a script and update this before trusting bo7_speed."
+    }
+  },
+  "rules": [
+    {
+      "target": "bo7_bggrav",
+      "label": "World gravity (bg_gravity)",
+      "transform": "direct",
+      "patterns": ["(^|[._/])(bg_|player_?)?gravity$", "gravity(?!.*(scale|factor|mult|ratio))"]
+    },
+    {
+      "target": "bo7_fallmin",
+      "label": "Fall damage starts (height)",
+      "transform": "direct",
+      "patterns": ["fall.*damage.*min.*height", "min.*fall.*(damage)?.*height"]
+    },
+    {
+      "target": "bo7_fallmax",
+      "label": "Fall damage is lethal (height)",
+      "transform": "direct",
+      "patterns": ["fall.*damage.*max.*height", "max.*fall.*(damage)?.*height"]
+    },
+    {
+      "target": "bo7_mantlerange",
+      "label": "Mantle check range",
+      "transform": "direct",
+      "patterns": ["mantle.*check.*range", "mantle.*(range|reach|dist)"]
+    },
+    {
+      "target": "bo7_mantlerangemp",
+      "label": "Mantle check range (MP)",
+      "transform": "direct",
+      "patterns": ["mantle.*check.*range.*mp", "mantle.*check.*range", "mantle.*(range|reach|dist)"]
+    },
+    {
+      "target": "bo7_mantleradius",
+      "label": "Mantle check radius",
+      "transform": "direct",
+      "patterns": ["mantle.*radius"]
+    },
+    {
+      "target": "bo7_mantleangle",
+      "label": "Mantle check angle",
+      "transform": "direct",
+      "patterns": ["mantle.*angle"]
+    },
+    {
+      "target": "bo7_ledgeup",
+      "label": "Highest ledge you can climb",
+      "transform": "direct",
+      "patterns": ["mantle.*max.*height", "ledge.*(max)?.*height", "mantle.*height"]
+    },
+    {
+      "target": "bo7_ledgereach",
+      "label": "Ledge grab reach",
+      "transform": "direct",
+      "patterns": ["ledge.*(reach|dist)", "mantle.*forward.*(dist|reach)"]
+    },
+    {
+      "target": "bo7_lift",
+      "label": "Wall jump upward speed (side)",
+      "transform": "direct",
+      "patterns": ["wall.?jump.*(up|vert|z|lift).*(vel|speed|impulse)", "wall.?jump.*(up|vert|lift|height)"]
+    },
+    {
+      "target": "bo7_out",
+      "label": "Wall jump push-off speed",
+      "transform": "direct",
+      "patterns": ["wall.?jump.*(out|away|push|horiz|normal).*(vel|speed|impulse)?"]
+    },
+    {
+      "target": "bo7_minspeed",
+      "label": "Wall jump minimum launch speed",
+      "transform": "direct",
+      "patterns": ["wall.?jump.*min.*(speed|vel)"]
+    },
+    {
+      "target": "bo7_maxspeed",
+      "label": "Wall jump maximum launch speed",
+      "transform": "direct",
+      "patterns": ["wall.?jump.*max.*(speed|vel)"]
+    },
+    {
+      "target": "bo7_cooldown",
+      "label": "Wall jump cooldown (ms)",
+      "transform": "ms",
+      "patterns": ["wall.?jump.*(cooldown|delay|interval)"]
+    },
+    {
+      "target": "bo7_speed",
+      "label": "Omni-movement speed scale",
+      "transform": "ratio",
+      "ref": "bo3_sprint_speed",
+      "patterns": ["(^|[._/])sprint.*speed(?!.*(tac|super|scale|swim|ads|crouch|prone))", "(^|[._/])sprint.*speed"]
+    },
+    {
+      "target": "bo7_leanshift",
+      "label": "Lean / corner peek shift",
+      "transform": "direct",
+      "patterns": ["lean.*(shift|offset|dist)"]
+    },
+    {
+      "target": "bo7_proneyaw",
+      "label": "Prone turn cap (degrees)",
+      "transform": "direct",
+      "patterns": ["prone.*yaw.*cap", "prone.*yaw"]
+    }
+  ]
+}
