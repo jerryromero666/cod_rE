@@ -1,8 +1,0 @@
-index,type,name,resident,streamed,parentStack
-1,string,,0,0,||assetlist
-2,rawfile,dummy.cfg,17,0,|zone_source/mp_mod.zone|csv
-3,scriptparsetree,scripts/mp/bo7_movement.gsc,2088,0,|zone_source/mp_mod.zone|csv
-4,scriptparsetree,scripts/mp/gametypes/_globallogic_spawn.gsc,17016,0,|zone_source/mp_mod.zone|csv
-5,keyvaluepairs,mp_mod,1114,0,||assetlist
-6,bgcache,mp_mod,265,0,||assetlist
-7,assetlist,,80,0,

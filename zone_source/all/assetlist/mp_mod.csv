@@ -1,4 +1,0 @@
-rawfile,dummy.cfg
-scriptparsetree,scripts/mp/bo7_movement.gsc
-scriptparsetree,scripts/mp/gametypes/_globallogic_spawn.gsc
-keyvaluepairs,mp_mod

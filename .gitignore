@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Mod compiler (linker) output - regenerated on every build
+zone_source/*/assetinfo/
+zone_source/*/assetlist/
+zone_source/*/scriptgdb/
+*.errorlog
+*.badnodes
+
+# OS / editor junk
+Thumbs.db
+desktop.ini
+.DS_Store
