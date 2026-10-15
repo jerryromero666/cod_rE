@@ -61,7 +61,6 @@ function bo7_init()
 
     level thread bo7_flag_omni();
     callback::on_spawned( &bo7_cp_on_spawned );
-    callback::on_connect( &bo7_wj_on_connect );
 }
 
 // True in Dead Ops Arcade (cp_doa_bo3), which runs in the campaign mode.
@@ -911,16 +910,16 @@ function wallmode_name( m )
 // through the bo7_wjstate clientfield (bo7_wj_publish): the client script
 // keeps asking the DLL to send again until the server reports the same
 // setting the player picked. That covers a send made before this listener
-// was running (connecting, a map change) as well as one that never arrived.
-// The listener starts when the player connects, not at spawn, so a choice
-// made in the lobby, while dead or in a killcam is taken at once, and it is
-// restarted at every spawn in case a map restart dropped it. A repeat that
-// changes nothing is not announced at spawn or more than once in 2 s.
-function bo7_wj_on_connect()
-{
-    self thread monitor_wallcfg();
-}
-
+// was running (loading in, a map change) as well as one that never arrived.
+// The listener is started by bo7_wj_publish at each spawn and keeps running
+// while the player is dead or in a killcam. It is not started before the
+// first spawn on purpose: bo7slice.dll sends its built-in setting (mode 1,
+// auto) by itself when it first sees a server, and taking that as the
+// player's choice would replace the server's own default (bo7_wallmode /
+// bo7_wallspace) for players who never chose. A real choice made before the
+// first spawn arrives anyway, as a resend once the server's first report
+// reaches the client. A repeat that changes nothing is not announced at
+// spawn or more than once in 2 s.
 function monitor_wallcfg()
 {
     self endon( "disconnect" );
@@ -951,8 +950,7 @@ function monitor_wallcfg()
 
         self.bo7_wm = m;
         self.bo7_ws = ( s != 0 );
-        if ( IsDefined( self.bo7_spawntime ) )
-            self bo7_wj_state_send();
+        self bo7_wj_state_send();
 
         if ( same )
         {

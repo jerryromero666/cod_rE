@@ -93,13 +93,16 @@ function bo7_deferred_load()
 // never arriving. The server reports the setting it is really using in the
 // bo7_wjstate clientfield; while that differs from the player's choice, both
 // dvars are written again (as whole numbers, so the DLL and this script read
-// them the same way), which makes the DLL send the pair again. The first
-// resend waits 1 s, time for the normal send to be confirmed, then one a
-// second for five tries, then one every 5 s until the server agrees.
+// them the same way), which makes the DLL send the pair again. The server
+// only listens once the player has spawned, so nothing is resent before its
+// first report. After a new choice or a new report the first resend waits
+// 1 s, time for the normal send to be confirmed, then one a second for five
+// tries, then one every 5 s until the server agrees.
 // bo7_wjstatus (type it in the console) says whether the keys are working.
 function bo7_wj_watch()
 {
-    lastwant = -1;
+    lastwant = -2;
+    lasthave = -1;
     ticks    = 0;
     tries    = 0;
     status   = "";
@@ -121,9 +124,10 @@ function bo7_wj_watch()
         if ( IsDefined( level.bo7_wjstate ) )
             have = level.bo7_wjstate;
 
-        if ( want != lastwant )
+        if ( want != lastwant || have != lasthave )
         {
             lastwant = want;
+            lasthave = have;
             ticks = 0;
             tries = 0;
         }
@@ -135,12 +139,11 @@ function bo7_wj_watch()
             SetDvar( "bo7_wjstatus", s );
         }
 
-        if ( want == 0 || want == have )
-        {
-            ticks = 0;
-            tries = 0;
+        // Nothing to resend: no choice of the player's own (0), a value that
+        // is not a whole number (-1), no report from the server yet, or the
+        // server already agrees.
+        if ( want <= 0 || have == 0 || want == have )
             continue;
-        }
 
         ticks++;
         gap = 10;
@@ -159,13 +162,20 @@ function bo7_wj_watch()
 
 // The player's own wall-jump choice in the bo7_wjstate form, or 0 if they have
 // never made one (the server default applies). A dvar that is still empty
-// counts as the DLL's starting value: mode 1, space 0.
+// counts as the DLL's starting value: mode 1, space 0. -1 if a dvar holds
+// something other than a whole number (typed in the console): the DLL
+// ignores text it cannot read and keeps its last value, which this script
+// cannot see, so it leaves it alone rather than guess.
 function bo7_wj_wanted()
 {
     ms = GetDvarString( "bo7_mywallmode" );
     ss = GetDvarString( "bo7_mywallspace" );
     if ( ms == "" && ss == "" )
         return 0;
+    if ( ms != "" && ms != "" + GetDvarInt( "bo7_mywallmode" ) )
+        return -1;
+    if ( ss != "" && ss != "" + GetDvarInt( "bo7_mywallspace" ) )
+        return -1;
 
     m = 1;
     if ( ms != "" )
@@ -209,6 +219,8 @@ function bo7_wj_desc( v )
 // so it is not trusted on its own).
 function bo7_wj_status( want, have, tries )
 {
+    if ( want < 0 )
+        return "cannot read your setting - bo7_mywallmode and bo7_mywallspace take whole numbers only; press F1-F5 to set it again";
     if ( want == 0 )
     {
         if ( have == 0 )
@@ -220,7 +232,7 @@ function bo7_wj_status( want, have, tries )
 
     s = "waiting for the server to apply " + bo7_wj_desc( want ) + " (sent again " + tries + " times)";
     if ( have == 0 )
-        s = "waiting for the server to report its setting (sent again " + tries + " times)";
+        s = "waiting for the server - it reports your setting once you have spawned";
     if ( tries >= 3 && !IsSubStr( GetDvarString( "bo7_slicedll" ), "OK_" ) )
         s = s + " - bo7slice.dll does not look loaded (bo7_slicedll " + GetDvarString( "bo7_slicedll" ) + "); without it F1-F5 and the console settings cannot reach the server";
     return s;
