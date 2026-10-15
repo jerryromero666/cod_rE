@@ -343,6 +343,7 @@ function register_bo7_dvars()
     bo7_default( "bo7_wallspace",       0 );
     bo7_default( "bo7_wjbuffer",        50 );
     bo7_default( "bo7_wjtouch",         24 );
+    bo7_default( "bo7_wjwrslack",       16 );
     bo7_default( "bo7_sidedist",   36 );
 
     bo7_default( "bo7_lift",       400 );
@@ -907,9 +908,11 @@ function bo7_jump_poll()
 
     // The press that ends an engine wall run (the campaign has it on; MP and
     // ZM with bo7_keepwallrun 1) at the pending wall is the press at that
-    // wall, not a takeoff: the engine turns it into its own wall-run jump
-    // before script sees it, so it is caught during the wall run or on the
-    // frame after, and bo7_pend_go launches the mod's wall jump instead.
+    // wall, not a takeoff, and bo7_pend_go launches the mod's wall jump in
+    // place of the engine's wall-run jump: on the frame it is seen while
+    // still wall running, or on the first frame after the wall run with the
+    // touch distance widened by bo7_wjwrslack (default 16) for the engine's
+    // push off the wall (so running off the end of a wall does not count).
     wrj = false;
     if ( edge && IsDefined( self.bo7_pendn ) )
     {
@@ -961,11 +964,14 @@ function bo7_samen( a, b )
     return ( ( a[0] * b[0] ) + ( a[1] * b[1] ) ) > GetDvarFloat( "bo7_samewall", 0.85 );
 }
 
-// True if the wall with normal n is within bo7_wjtouch of the player's
-// centre: the wall checks' own probe, swept from the eye towards that wall.
-function bo7_atwall( n )
+// True if the wall with normal n is within bo7_wjtouch (plus slack, when
+// given) of the player's centre: the wall checks' own probe, swept from the
+// eye towards that wall.
+function bo7_atwall( n, slack )
 {
     touch = GetDvarFloat( "bo7_wjtouch", 24 );
+    if ( IsDefined( slack ) )
+        touch = touch + slack;
     phys  = GetDvarInt( "bo7_physprobe", 1 );
     w = 0;
     if ( phys )
@@ -1034,7 +1040,10 @@ function bo7_pend_go()
     n = self.bo7_pendn;
     if ( self bo7_cooling() && self bo7_lastwall( n ) )
         return false;
-    if ( self.bo7_jumpat != self.bo7_wrj && !self bo7_atwall( n ) )
+    slack = 0;
+    if ( self.bo7_jumpat == self.bo7_wrj )
+        slack = GetDvarFloat( "bo7_wjwrslack", 16 );
+    if ( !self bo7_atwall( n, slack ) )
         return false;
 
     if ( self.bo7_pendtag == "front" )
@@ -1256,6 +1265,11 @@ function monitor_front_bounce()
         // bo7_jump_poll).
         pm = self bo7_wallspace();
         if ( !pm && self bo7_cooling() )
+            continue;
+
+        // Press mode: a press seen during an engine wall run at the pending
+        // wall launches on that frame (see bo7_jump_poll).
+        if ( pm && self.bo7_jumpat > 0 && self.bo7_jumpat == self.bo7_wrj && self bo7_pend_go() )
             continue;
 
         if ( self IsWallRunning() )
