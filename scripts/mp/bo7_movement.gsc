@@ -829,8 +829,8 @@ function monitor_speed()
 // Records the wall-jump press for press-jump mode (bo7_wallspace 1): a jump
 // press made in the air, at the wall. In this mode monitor_front_bounce only
 // launches when the wall is within bo7_wjtouch units of the player's centre
-// (default 24: the player is 15 wide, so within about 9 units of touching
-// it), and only on a press at most bo7_wjbuffer ms old (default 50, one
+// (default 24: the player's collision radius is 15, so within about 9 units
+// of touching a wall square to it), and only on a press at most bo7_wjbuffer ms old (default 50, one
 // frame of grace), so the press has to be made at the wall, not on the way
 // to it. The jump off the ground never counts, so jumping while right next
 // to a wall does not fire a wall jump either: the player presses again once
@@ -842,9 +842,13 @@ function monitor_speed()
 // the velocity into it, which would leave only a slide along the wall to
 // judge from (wrong direction for a front wall hit at an angle, and a weak
 // launch). So the poll keeps the horizontal velocity from the frame before
-// an impact (a sharp drop in horizontal velocity while airborne, outside the
-// mod's own pushes) in bo7_impv, and press mode judges the wall jump from it
-// for bo7_wjimpact ms (default 500), as auto mode judges before contact.
+// an impact (a sharp drop in horizontal velocity while airborne) in
+// bo7_impv, with the wall it came from (bo7_impn), and for bo7_wjimpact ms
+// (default 500; the first sample is kept that long) press mode judges that
+// wall from it, as auto mode judges before contact. Any other wall, or no
+// launch from the sample, is judged from the current velocity. launch_off
+// records the velocity it sets during its hold, so an impact right after a
+// wall jump is caught as well.
 // The cooldown after a wall jump (bo7_cooldown) only blocks the same wall in
 // press mode (bo7_lastwall), so a press at the next wall of a chain is not
 // lost to it.
@@ -905,12 +909,15 @@ function bo7_jump_poll()
     vh = ( vel[0], vel[1], 0 );
     if ( !inair || takeoff )
         self.bo7_impv = undefined;
-    else if ( !lift && Length( vh ) < Length( self.bo7_jvh ) && Length( self.bo7_jvh - vh ) > 60 )
+    else if ( Length( vh ) < Length( self.bo7_jvh ) && Length( self.bo7_jvh - vh ) > 60 )
     {
         if ( !IsDefined( self.bo7_impv ) || t - self.bo7_impt > GetDvarInt( "bo7_wjimpact", 500 ) )
         {
+            d  = vh - self.bo7_jvh;
+            dl = Length( d );
             self.bo7_impv = self.bo7_jvh;
             self.bo7_impt = t;
+            self.bo7_impn = ( d[0] / dl, d[1] / dl, 0 );
         }
     }
 
@@ -1074,6 +1081,15 @@ function bo7_cooling()
     return ( GetTime() - self.bo7_last ) < GetDvarFloat( "bo7_cooldown", 300 );
 }
 
+// True if wall normal n is the wall the impact sample came from: the change
+// in velocity at the impact points out of that wall.
+function bo7_impwall( n )
+{
+    if ( !IsDefined( self.bo7_impn ) )
+        return false;
+    return ( ( n[0] * self.bo7_impn[0] ) + ( n[1] * self.bo7_impn[1] ) ) > GetDvarFloat( "bo7_samewall", 0.85 );
+}
+
 // True if wall normal n is the wall of the last wall jump (bo7_samewall).
 // Press-jump mode only lets the cooldown block that wall.
 function bo7_lastwall( n )
@@ -1149,170 +1165,188 @@ function monitor_front_bounce()
             continue;
         touch = GetDvarFloat( "bo7_wjtouch", 24 );
 
-        v  = self GetVelocity();
-        hs = Length( ( v[0], v[1], 0 ) );
-        if ( pm && IsDefined( self.bo7_impv ) && GetTime() - self.bo7_impt <= GetDvarInt( "bo7_wjimpact", 500 ) )
+        // Press mode with a fresh impact sample judges first from the
+        // velocity just before the impact, for the wall that was hit only
+        // (bo7_impwall); if that launches nothing it judges again, in the
+        // same frame, from the current velocity as auto mode does. Auto
+        // mode makes the one ordinary pass.
+        usei = ( pm && IsDefined( self.bo7_impv ) && GetTime() - self.bo7_impt <= GetDvarInt( "bo7_wjimpact", 500 ) );
+        for ( pass = 0; pass < 2; pass++ )
         {
-            v  = ( self.bo7_impv[0], self.bo7_impv[1], v[2] );
-            hs = Length( self.bo7_impv );
-        }
-        if ( hs < GetDvarFloat( "bo7_frontspeed", 0 ) )
-            continue;
+            if ( pass == 1 && !usei )
+                break;
+            imp = ( pass == 0 && usei );
 
-        if ( v[2] > GetDvarFloat( "bo7_frontmaxz", 380 ) )
-            continue;
-
-        if ( hs < GetDvarFloat( "bo7_slowspeed", 120 ) )
-        {
-            la   = self GetPlayerAngles();
-            lf   = AnglesToForward( ( 0, la[1], 0 ) );
-            vhat = ( lf[0], lf[1], 0 );
-        }
-        else
-            vhat = ( v[0]/hs, v[1]/hs, 0 );
-
-        eye      = self.origin + ( 0, 0, 36 );
-        onground = self IsOnGround();
-
-        if ( wside && GetDvarInt( "bo7_sidepre", 1 )
-             && hs >= GetDvarFloat( "bo7_sidespeed", 100 )
-             && !( GetDvarInt( "bo7_side_air", 1 ) && onground ) )
-        {
-            sdist = GetDvarFloat( "bo7_sidedist", 36 );
-            sphys = GetDvarInt( "bo7_sidephys", 1 );
-            soff  = 0;
-            if ( sphys )
-                soff = GetDvarFloat( "bo7_probew", 12 );
-            slen  = sdist - soff;
-            if ( slen < 4 )
-                slen = 4;
-            rtx   = vhat[1];
-            rty   = 0 - vhat[0];
-            sbf   = 1.0;
-            sbn   = ( 0, 0, 0 );
-            sba   = 0;
-            sbd   = 0;
-
-            dgx = vhat[0] + rtx;
-            dgy = vhat[1] + rty;
-            dgl = Length( ( dgx, dgy, 0 ) );
-            if ( dgl > 0.1 ) { dgx = dgx/dgl; dgy = dgy/dgl; }
-            dhx = vhat[0] - rtx;
-            dhy = vhat[1] - rty;
-            dhl = Length( ( dhx, dhy, 0 ) );
-            if ( dhl > 0.1 ) { dhx = dhx/dhl; dhy = dhy/dhl; }
-
-            for ( k = 0; k < 4; k++ )
+            v  = self GetVelocity();
+            hs = Length( ( v[0], v[1], 0 ) );
+            if ( imp )
             {
-                if ( k == 0 )      sv = (  rtx*slen,  rty*slen, 0 );
-                else if ( k == 1 ) sv = ( 0-rtx*slen, 0-rty*slen, 0 );
-                else if ( k == 2 ) sv = (  dgx*slen,  dgy*slen, 0 );
-                else               sv = (  dhx*slen,  dhy*slen, 0 );
+                v  = ( self.bo7_impv[0], self.bo7_impv[1], v[2] );
+                hs = Length( self.bo7_impv );
+            }
+            if ( hs < GetDvarFloat( "bo7_frontspeed", 0 ) )
+                continue;
 
+            if ( v[2] > GetDvarFloat( "bo7_frontmaxz", 380 ) )
+                continue;
+
+            if ( hs < GetDvarFloat( "bo7_slowspeed", 120 ) )
+            {
+                la   = self GetPlayerAngles();
+                lf   = AnglesToForward( ( 0, la[1], 0 ) );
+                vhat = ( lf[0], lf[1], 0 );
+            }
+            else
+                vhat = ( v[0]/hs, v[1]/hs, 0 );
+
+            eye      = self.origin + ( 0, 0, 36 );
+            onground = self IsOnGround();
+
+            if ( wside && GetDvarInt( "bo7_sidepre", 1 )
+                 && hs >= GetDvarFloat( "bo7_sidespeed", 100 )
+                 && !( GetDvarInt( "bo7_side_air", 1 ) && onground ) )
+            {
+                sdist = GetDvarFloat( "bo7_sidedist", 36 );
+                sphys = GetDvarInt( "bo7_sidephys", 1 );
+                soff  = 0;
                 if ( sphys )
-                    ts = self wall_probe( eye, eye + sv );
-                else
-                    ts = BulletTrace( eye, eye + sv, false, self );
-                if ( ts[ "fraction" ] >= 0.99 )
-                    continue;
+                    soff = GetDvarFloat( "bo7_probew", 12 );
+                slen  = sdist - soff;
+                if ( slen < 4 )
+                    slen = 4;
+                rtx   = vhat[1];
+                rty   = 0 - vhat[0];
+                sbf   = 1.0;
+                sbn   = ( 0, 0, 0 );
+                sba   = 0;
+                sbd   = 0;
 
-                sn  = ts[ "normal" ];
-                snl = Length( ( sn[0], sn[1], 0 ) );
-                if ( snl < 0.1 && sphys )
+                dgx = vhat[0] + rtx;
+                dgy = vhat[1] + rty;
+                dgl = Length( ( dgx, dgy, 0 ) );
+                if ( dgl > 0.1 ) { dgx = dgx/dgl; dgy = dgy/dgl; }
+                dhx = vhat[0] - rtx;
+                dhy = vhat[1] - rty;
+                dhl = Length( ( dhx, dhy, 0 ) );
+                if ( dhl > 0.1 ) { dhx = dhx/dhl; dhy = dhy/dhl; }
+
+                for ( k = 0; k < 4; k++ )
                 {
-                    t2  = BulletTrace( eye, eye + ( sv[0] + ( sv[0] / slen ) * soff, sv[1] + ( sv[1] / slen ) * soff, 0 ), false, self );
-                    sn  = t2[ "normal" ];
+                    if ( k == 0 )      sv = (  rtx*slen,  rty*slen, 0 );
+                    else if ( k == 1 ) sv = ( 0-rtx*slen, 0-rty*slen, 0 );
+                    else if ( k == 2 ) sv = (  dgx*slen,  dgy*slen, 0 );
+                    else               sv = (  dhx*slen,  dhy*slen, 0 );
+
+                    if ( sphys )
+                        ts = self wall_probe( eye, eye + sv );
+                    else
+                        ts = BulletTrace( eye, eye + sv, false, self );
+                    if ( ts[ "fraction" ] >= 0.99 )
+                        continue;
+
+                    sn  = ts[ "normal" ];
                     snl = Length( ( sn[0], sn[1], 0 ) );
+                    if ( snl < 0.1 && sphys )
+                    {
+                        t2  = BulletTrace( eye, eye + ( sv[0] + ( sv[0] / slen ) * soff, sv[1] + ( sv[1] / slen ) * soff, 0 ), false, self );
+                        sn  = t2[ "normal" ];
+                        snl = Length( ( sn[0], sn[1], 0 ) );
+                    }
+                    if ( snl < 0.1 )
+                        continue;
+
+                    snx = sn[0] / snl;
+                    sny = sn[1] / snl;
+                    sa  = ( snx * vhat[0] ) + ( sny * vhat[1] );
+                    if ( sa < 0 )
+                        sa = 0 - sa;
+                    if ( sa > GetDvarFloat( "bo7_maxalign", 0.75 ) )
+                        continue;
+                    if ( imp && !self bo7_impwall( ( snx, sny, 0 ) ) )
+                        continue;
+
+                    if ( ts[ "fraction" ] < sbf )
+                    {
+                        self.bo7_hitd = ( ts[ "fraction" ] * slen ) + soff;
+                        sbd = self.bo7_hitd;
+                        sbf = ts[ "fraction" ];
+                        sbn = ( snx, sny, 0 );
+                        sba = sa;
+                    }
                 }
-                if ( snl < 0.1 )
-                    continue;
 
-                snx = sn[0] / snl;
-                sny = sn[1] / snl;
-                sa  = ( snx * vhat[0] ) + ( sny * vhat[1] );
-                if ( sa < 0 )
-                    sa = 0 - sa;
-                if ( sa > GetDvarFloat( "bo7_maxalign", 0.75 ) )
-                    continue;
-
-                if ( ts[ "fraction" ] < sbf )
+                if ( Length( sbn ) > 0.1 && ( !pm || sbd <= touch ) && !( cool && self bo7_lastwall( sbn ) ) )
                 {
-                    self.bo7_hitd = ( ts[ "fraction" ] * slen ) + soff;
-                    sbd = self.bo7_hitd;
-                    sbf = ts[ "fraction" ];
-                    sbn = ( snx, sny, 0 );
-                    sba = sa;
+                    self thread launch_off( sbn, hs, v[2], sba, "pre", GetTime() );
+                    break;
                 }
             }
 
-            if ( Length( sbn ) > 0.1 && ( !pm || sbd <= touch ) && !( cool && self bo7_lastwall( sbn ) ) )
-            {
-                self thread launch_off( sbn, hs, v[2], sba, "pre", GetTime() );
+            if ( !wfront || GetDvarInt( "bo7_front", 1 ) == 0 )
                 continue;
-            }
-        }
 
-        if ( !wfront || GetDvarInt( "bo7_front", 1 ) == 0 )
-            continue;
+            if ( GetDvarInt( "bo7_front_air", 1 ) && onground )
+                continue;
 
-        if ( GetDvarInt( "bo7_front_air", 1 ) && onground )
-            continue;
+            dist  = GetDvarFloat( "bo7_frontdist", 70 );
+            reach = GetDvarFloat( "bo7_reach", 16 ) + ( hs * GetDvarFloat( "bo7_reachk", 0.10 ) );
+            if ( reach > dist )
+                reach = dist;
+            dv = ( vhat[0]*reach, vhat[1]*reach, 0 );
 
-        dist  = GetDvarFloat( "bo7_frontdist", 70 );
-        reach = GetDvarFloat( "bo7_reach", 16 ) + ( hs * GetDvarFloat( "bo7_reachk", 0.10 ) );
-        if ( reach > dist )
-            reach = dist;
-        dv = ( vhat[0]*reach, vhat[1]*reach, 0 );
+            if ( GetDvarInt( "bo7_physprobe", 1 ) )
+                t = self wall_probe( eye, eye + dv );
+            else
+                t = BulletTrace( eye, eye + dv, false, self );
 
-        if ( GetDvarInt( "bo7_physprobe", 1 ) )
-            t = self wall_probe( eye, eye + dv );
-        else
-            t = BulletTrace( eye, eye + dv, false, self );
+            if ( t[ "fraction" ] >= 0.99 )
+                continue;
 
-        if ( t[ "fraction" ] >= 0.99 )
-            continue;
+            self.bo7_hitd = t[ "fraction" ] * reach;
 
-        self.bo7_hitd = t[ "fraction" ] * reach;
+            // Distance from the player's centre to the wall: the box probe stops
+            // with its face, bo7_probew from the centre, on the wall.
+            fd = self.bo7_hitd;
+            if ( GetDvarInt( "bo7_physprobe", 1 ) )
+                fd = fd + GetDvarFloat( "bo7_probew", 12 );
+            if ( pm && fd > touch )
+                continue;
 
-        // Distance from the player's centre to the wall: the box probe stops
-        // with its face, bo7_probew from the centre, on the wall.
-        fd = self.bo7_hitd;
-        if ( GetDvarInt( "bo7_physprobe", 1 ) )
-            fd = fd + GetDvarFloat( "bo7_probew", 12 );
-        if ( pm && fd > touch )
-            continue;
-
-        n  = t[ "normal" ];
-        nl = Length( ( n[0], n[1], 0 ) );
-        if ( nl < 0.1 )
-        {
-            t2 = BulletTrace( eye, eye + dv, false, self );
-            n  = t2[ "normal" ];
+            n  = t[ "normal" ];
             nl = Length( ( n[0], n[1], 0 ) );
-        }
-        if ( nl < 0.1 )
-            continue;
-        nx = n[0] / nl;
-        ny = n[1] / nl;
-
-        a = ( nx * vhat[0] ) + ( ny * vhat[1] );
-        if ( a < 0 )
-            a = 0 - a;
-        if ( a < GetDvarFloat( "bo7_frontalign", 0.75 ) )
-            continue;
-
-        if ( cool && self bo7_lastwall( ( nx, ny, 0 ) ) )
-            continue;
-
-        if ( IsDefined( self.bo7_front_wall ) )
-        {
-            same = ( nx * self.bo7_front_wall[0] ) + ( ny * self.bo7_front_wall[1] );
-            if ( same > GetDvarFloat( "bo7_samewall", 0.85 ) )
+            if ( nl < 0.1 )
+            {
+                t2 = BulletTrace( eye, eye + dv, false, self );
+                n  = t2[ "normal" ];
+                nl = Length( ( n[0], n[1], 0 ) );
+            }
+            if ( nl < 0.1 )
                 continue;
-        }
-        self.bo7_front_wall = ( nx, ny, 0 );
+            nx = n[0] / nl;
+            ny = n[1] / nl;
 
-        self thread launch_off( ( nx, ny, 0 ), hs, v[2], a, "front", GetTime() );
+            a = ( nx * vhat[0] ) + ( ny * vhat[1] );
+            if ( a < 0 )
+                a = 0 - a;
+            if ( a < GetDvarFloat( "bo7_frontalign", 0.75 ) )
+                continue;
+
+            if ( cool && self bo7_lastwall( ( nx, ny, 0 ) ) )
+                continue;
+            if ( imp && !self bo7_impwall( ( nx, ny, 0 ) ) )
+                continue;
+
+            if ( IsDefined( self.bo7_front_wall ) )
+            {
+                same = ( nx * self.bo7_front_wall[0] ) + ( ny * self.bo7_front_wall[1] );
+                if ( same > GetDvarFloat( "bo7_samewall", 0.85 ) )
+                    continue;
+            }
+            self.bo7_front_wall = ( nx, ny, 0 );
+
+            self thread launch_off( ( nx, ny, 0 ), hs, v[2], a, "front", GetTime() );
+            break;
+        }
     }
 }
 
@@ -1668,6 +1702,7 @@ function launch_off( normal, peak, vz_in, align, tag, t0 )
         hv = hv + int( Length( ( pv[0], pv[1], 0 ) ) ) + "/";
 
         self SetVelocity( ( hx, hy, zcur ) );
+        self.bo7_jvh = ( hx, hy, 0 );
         held = i + 1;
         wait 0.05;
         if ( !IsAlive( self ) )
